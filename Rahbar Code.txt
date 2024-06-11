@@ -1,0 +1,272 @@
+// Motor control pins
+const int IN1 = 11;
+const int IN2 = 10;
+const int IN3 = 9;
+const int IN4 = 8;
+const int ENA = 12;
+const int ENB = 13;
+
+// IR sensor pins
+const int rightIR = A15;
+const int leftIR = A14;
+
+
+#define S0 3
+#define S1 4
+#define S2 5
+#define S3 6
+#define sensorOut 7
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <SoftwareSerial.h>
+SoftwareSerial BTSerial(27, 25);   //TX=27 RX=25
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define NUMFLAKES     10 // Number of snowflakes in the animation example
+
+#define LOGO_HEIGHT   16
+#define LOGO_WIDTH    16
+static const unsigned char PROGMEM logo_bmp[] =
+{ 0b00000000, 0b11000000,
+  0b00000001, 0b11000000,
+  0b00000001, 0b11000000,
+  0b00000011, 0b11100000,
+  0b11110011, 0b11100000,
+  0b11111110, 0b11111000,
+  0b01111110, 0b11111111,
+  0b00110011, 0b10011111,
+  0b00011111, 0b11111100,
+  0b00001101, 0b01110000,
+  0b00011011, 0b10100000,
+  0b00111111, 0b11100000,
+  0b00111111, 0b11110000,
+  0b01111100, 0b11110000,
+  0b01110000, 0b01110000,
+  0b00000000, 0b00110000 };
+int colorvar=0;
+float current_value=0;
+#define voltage_sensor A1
+float vOUT = 0.0;
+float vIN = 0.0;
+float R1 = 30000.0;
+float R2 = 7500.0;
+
+// Stores frequency read by the photodiodes
+int red = 0;
+int green = 0;
+int blue = 0;
+
+//for speed
+int pid;
+unsigned long millisBefore;
+volatile int holes;
+float rpm = 0;
+float actual_speed=0;
+
+void setup() {
+Serial.begin(9600);
+ BTSerial.begin(9600);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(rightIR, INPUT);
+  pinMode(leftIR, INPUT);
+
+  // Set initial motor direction
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  // Set initial motor speed
+  analogWrite(ENA, 100);
+  analogWrite(ENB, 100);
+  // Setting the outputs
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  
+  
+  // Setting the sensorOut as an input
+  pinMode(sensorOut, INPUT);
+  
+  // Setting frequency scaling to 20%
+  digitalWrite(S0,HIGH);
+  digitalWrite(S1,LOW);
+  Serial.begin(9600);
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+
+  }
+
+  // Show initial display buffer contents on the screen --
+ // the library initializes this with an Adafruit splash screen.
+   display.display();
+  delay(1000); // Pause for 2 seconds
+  display.clearDisplay();
+  
+   //Speed Sensor
+    pinMode(2, INPUT);          
+  attachInterrupt(digitalPinToInterrupt(2), count, FALLING);
+  delay(100);
+
+}
+
+void loop(){
+Serial.println("Started");
+   color();                                                    //checking color sensor
+    if(red<blue && red<green && red<90)  //red detected , stop the robot
+  {colorvar=1;
+      digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+  }
+   else                //red not detected
+   {colorvar=0;}
+
+     int rightSensor = digitalRead(rightIR);
+  int leftSensor = digitalRead(leftIR);
+
+  if (rightSensor == HIGH && leftSensor == HIGH) {
+    // Both sensors are on the black line, move backward
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+  } else if (rightSensor == HIGH && leftSensor == LOW) {
+    // Right sensor is on the black line, turn right
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+  } else if (rightSensor == LOW && leftSensor == HIGH) {
+    // Left sensor is on the black line, turn left
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  } else {
+    // Neither sensor is on the black line, move forward
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  }
+
+  
+   current_value=current_sensor();                           //current sensor
+
+     int value = analogRead(voltage_sensor);
+  vOUT = (value * 5.0) / 1024.0;
+  vIN = vOUT / (R2 / (R1 + R2));                            //voltage sensor
+
+  actual_speed=speedcount();
+  
+     ledshow(colorvar,current_value,vIN);                  //function for led
+     
+     bt_module(colorvar,current_value,vIN,actual_speed);               //function for bluetooth comunication
+
+     
+}
+
+void color() {
+  // Setting RED (R) filtered photodiodes to be read
+  Serial.println("Color called");
+  digitalWrite(S2,LOW);
+  digitalWrite(S3,LOW);
+  // Reading the output frequency
+  red = pulseIn(sensorOut, LOW);
+  delay(10);
+  
+  // Setting GREEN (G) filtered photodiodes to be read
+  digitalWrite(S2,HIGH);
+  digitalWrite(S3,HIGH);
+  // Reading the output frequency
+  green = pulseIn(sensorOut, LOW);
+  delay(10);
+ 
+  // Setting BLUE (B) filtered photodiodesto be read
+  digitalWrite(S2,LOW);
+  digitalWrite(S3,HIGH);
+  // Reading the output frequency
+  blue = pulseIn(sensorOut, LOW);
+}
+float current_sensor()
+{
+    Serial.println("Current called");
+    float current = 0;
+  for(int i = 0; i < 1000; i++) 
+  {
+    current = current + (.044 * analogRead(A0) -3.78) / 1000;
+    delay(1);
+  }
+  return current; 
+ }
+void ledshow( int colorvar , float current_value , float vIN)
+{
+      Serial.println("OLED called");
+display.clearDisplay();
+    display.setTextSize(2);      // Normal 1:1 pixel scale
+    display.setTextColor(WHITE); // White text
+    display.setCursor(0, 0);
+      if(colorvar==1)
+  { display.println("Red Detect");}
+  if(colorvar==0)
+  {display.println("Not Red");}
+double volt=50;
+double amp=40;
+
+display.print(vIN);
+display.println(" V");
+display.print(current_value);
+display.println(" mA");
+display.display();
+  }
+
+  void bt_module(int colorvar , float current_value , float vIN , float actual_speed)
+  {
+  Serial.println("Bluetooth called");
+          if(colorvar==1)
+  { BTSerial.println("Red Detect");}
+  if(colorvar==0)
+  {BTSerial.println("Not Red");}
+double volt=50;
+double amp=40;
+BTSerial.println("221674 221746 221665");
+BTSerial.print(vIN);
+BTSerial.println(" V");
+BTSerial.print(current_value);
+BTSerial.println(" mA");
+BTSerial.print(actual_speed);
+BTSerial.println(" rpm");
+BTSerial.println(" ... ");
+    }
+float speedcount()
+{
+    Serial.println("Speed called");
+    if (millis() - millisBefore > 1000) {
+    rpm = (holes / 12.0)*60;
+    holes = 0;
+    millisBefore = millis();
+    return rpm;
+  }
+  delay(10);
+  }
+    void count() {
+  holes++;
+}
